@@ -222,6 +222,7 @@ void to_json(nlohmann::json& j, const InputBufferConfig& c) {
     j = nlohmann::json{
         {"maxDelayMs", c.maxDelayMs},
         {"debounceMs", c.debounceMs},
+        {"interruptedDebounceMs", c.interruptedDebounceMs},
         {"maxTextLength", c.maxTextLength},
         {"maxBatchSize", c.maxBatchSize}
     };
@@ -230,6 +231,7 @@ void to_json(nlohmann::json& j, const InputBufferConfig& c) {
 void from_json(const nlohmann::json& j, InputBufferConfig& c) {
     readIfExists(j, "maxDelayMs", c.maxDelayMs);
     readIfExists(j, "debounceMs", c.debounceMs);
+    readIfExists(j, "interruptedDebounceMs", c.interruptedDebounceMs);
     readIfExists(j, "maxTextLength", c.maxTextLength);
     readIfExists(j, "maxBatchSize", c.maxBatchSize);
 }

@@ -137,6 +137,13 @@ ChatResponse runToolLoop(Llm& llm, ToolRegistry& reg, ChatRequest req,
     ChatResponse last;
 
     for (int step = 1; step <= opt.maxSteps; ++step) {
+        if (opt.shouldInterrupt && opt.shouldInterrupt()) {
+            log::info("ToolLoop", "在第 " + std::to_string(step) + " 步前检测到中断信号，提前退出");
+            last.finishReason = "interrupted";
+            last.text.clear();
+            return last;
+        }
+
         ChatResponse resp;
         bool gotEmpty = false;
 
@@ -154,6 +161,14 @@ ChatResponse runToolLoop(Llm& llm, ToolRegistry& reg, ChatRequest req,
         if (gotEmpty)
             throw std::runtime_error("模型连续返回空输出（无文本也无工具调用）");
         last = resp;
+
+        // LLM 调用返回后立即检查是否被新消息打断
+        if (opt.shouldInterrupt && opt.shouldInterrupt()) {
+            log::info("ToolLoop", "LLM 调用返回后检测到中断信号，丢弃当前响应");
+            last.finishReason = "interrupted";
+            last.text.clear();
+            return last;
+        }
 
         if (resp.toolCalls.empty()) {
             Msg done{Role::Assistant};
@@ -179,6 +194,12 @@ ChatResponse runToolLoop(Llm& llm, ToolRegistry& reg, ChatRequest req,
         bool shouldTerminate = false;
         std::pair<std::string, int> streak{"", 0};
         for (const auto& tc : resp.toolCalls) {
+            if (opt.shouldInterrupt && opt.shouldInterrupt()) {
+                log::info("ToolLoop", "工具执行前检测到中断信号，提前退出");
+                last.finishReason = "interrupted";
+                last.text.clear();
+                return last;
+            }
             auto def = reg.find(tc.name);
             if (def.has_value() && def->isTerminal) {
                 shouldTerminate = true;
@@ -197,11 +218,25 @@ ChatResponse runToolLoop(Llm& llm, ToolRegistry& reg, ChatRequest req,
             last.text.clear();
             return last;
         }
+
+        if (opt.shouldInterrupt && opt.shouldInterrupt()) {
+            log::info("ToolLoop", "工具执行后检测到中断信号，提前退出");
+            last.finishReason = "interrupted";
+            last.text.clear();
+            return last;
+        }
     }
 
     // 护栏 5：步数耗尽 -> 拔掉工具 + 注入强制总结指令再走一步。
     // 这意味着哪怕任务没做完，用户也一定会收到一句人话答复，而不是沉默或报错。
     // （先清空工具再注入提示词）
+    if (opt.shouldInterrupt && opt.shouldInterrupt()) {
+        log::info("ToolLoop", "达到最大步数但检测到中断信号，提前退出");
+        last.finishReason = "interrupted";
+        last.text.clear();
+        return last;
+    }
+
     log::info("ToolLoop", "达到最大步数，强制总结收尾");
     req.tools.clear();
     Msg notice{Role::User};
@@ -213,6 +248,14 @@ ChatResponse runToolLoop(Llm& llm, ToolRegistry& reg, ChatRequest req,
     req.messages.push_back(notice);
     if (sink) sink(notice);
     last = llm.chat(req);
+
+    if (opt.shouldInterrupt && opt.shouldInterrupt()) {
+        log::info("ToolLoop", "强制总结 LLM 调用后检测到中断信号，丢弃当前响应");
+        last.finishReason = "interrupted";
+        last.text.clear();
+        return last;
+    }
+
     return last;
 }
 

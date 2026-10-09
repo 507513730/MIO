@@ -92,8 +92,13 @@ BufferedBatch InputBuffer::waitForBatch() {
         const auto idleElapsed =
             std::chrono::duration_cast<std::chrono::milliseconds>(now - lastMsgTime_).count();
 
+        const bool isProc = processingTasks_ > 0;
+        const int activeDebounce = (isProc && cfg_.interruptedDebounceMs > 0)
+                                       ? cfg_.interruptedDebounceMs
+                                       : cfg_.debounceMs;
+
         // 配置为 0 时不延迟，立即触发
-        if (cfg_.debounceMs <= 0 || cfg_.maxDelayMs <= 0) {
+        if (activeDebounce <= 0 || cfg_.maxDelayMs <= 0) {
             break;
         }
 
@@ -103,11 +108,11 @@ BufferedBatch InputBuffer::waitForBatch() {
         }
 
         // 经过防抖静默期时触发
-        if (idleElapsed >= cfg_.debounceMs) {
+        if (idleElapsed >= activeDebounce) {
             break;
         }
 
-        const auto waitDebounce = std::chrono::milliseconds(cfg_.debounceMs - idleElapsed);
+        const auto waitDebounce = std::chrono::milliseconds(activeDebounce - idleElapsed);
         const auto waitMax = std::chrono::milliseconds(cfg_.maxDelayMs - totalElapsed);
         const auto waitDuration = std::min(waitDebounce, waitMax);
 
@@ -126,6 +131,25 @@ BufferedBatch InputBuffer::waitForBatch() {
     return batch;
 }
 
+void InputBuffer::incrementProcessing() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    ++processingTasks_;
+    cv_.notify_all();
+}
+
+void InputBuffer::decrementProcessing() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (processingTasks_ > 0) {
+        --processingTasks_;
+    }
+    cv_.notify_all();
+}
+
+bool InputBuffer::isProcessing() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return processingTasks_ > 0;
+}
+
 bool InputBuffer::empty() const {
     std::lock_guard<std::mutex> lock(mtx_);
     return pendingRaw_.empty();
@@ -136,6 +160,7 @@ void InputBuffer::clear() {
     pendingRaw_.clear();
     pendingTurns_.clear();
     hasLeader_ = false;
+    processingTasks_ = 0;
     cv_.notify_all();
 }
 
@@ -168,7 +193,7 @@ void InputBufferManager::updateConfig(InputBufferConfig cfg) {
 void InputBufferManager::cleanupIdle() {
     std::lock_guard<std::mutex> lock(mtx_);
     for (auto it = buffers_.begin(); it != buffers_.end(); ) {
-        if (it->second.use_count() == 1 && it->second->empty()) {
+        if (it->second.use_count() == 1 && it->second->empty() && !it->second->isProcessing()) {
             it = buffers_.erase(it);
         } else {
             ++it;

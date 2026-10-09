@@ -63,6 +63,7 @@ class McpManager;
 struct BotReply {
     ConversationKey conversation;
     std::string text;
+    bool interrupted = false;
 };
 
 struct RuntimeState {

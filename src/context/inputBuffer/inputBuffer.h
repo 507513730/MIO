@@ -27,6 +27,7 @@ namespace mio {
 struct InputBufferConfig {
     int maxDelayMs = 800;             // 最大等待时间（从首条消息起算）
     int debounceMs = 400;             // 防抖静默窗口（有新消息则续期）
+    int interruptedDebounceMs = 200;  // 处于正在处理(打断)时的防抖窗口（加速触发以打断旧回复）
     std::size_t maxTextLength = 4096; // 单条文本过滤与截断上限
     std::size_t maxBatchSize = 16;    // 单批次最大收集消息数
 };
@@ -61,6 +62,11 @@ public:
     // Leader 线程阻塞等待当前批次窗口结束并取出完整批次
     BufferedBatch waitForBatch();
 
+    // 正在处理状态（用于在当前正在回复时缩短新消息防抖窗口并打断回复）
+    void incrementProcessing();
+    void decrementProcessing();
+    bool isProcessing() const;
+
     // 检查当前是否有未刷新的消息
     bool empty() const;
     void clear();
@@ -74,6 +80,7 @@ private:
     std::condition_variable cv_;
 
     bool hasLeader_ = false;
+    int processingTasks_ = 0;
     std::vector<IncomingMessage> pendingRaw_;
     std::vector<Msg> pendingTurns_;
     ConversationKey conversation_;

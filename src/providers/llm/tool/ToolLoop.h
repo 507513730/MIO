@@ -20,6 +20,7 @@ struct ToolLoopOptions {
     std::size_t maxInlineResultBytes = 4096; // 工具结果超过这个字节数就落盘截断
     int repeatStreakThreshold = 3;           // 同名同参连续调用 N 次后注入提醒
     std::filesystem::path overflowDir = "data/tool_overflow";
+    std::function<bool()> shouldInterrupt = nullptr; // 协作式中断检查点回调（返回 true 表示需中断）
 };
 
 // 事件回调：循环内产生的每条新消息（assistant / tool）都会推给 sink，

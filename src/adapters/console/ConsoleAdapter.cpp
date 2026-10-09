@@ -142,7 +142,7 @@ void runConsole(Runtime& runtime, std::istream& input, std::ostream& output) {
             if (parseMessage(line, message)) {
                 try {
                     const BotReply reply = runtime.ingest(std::move(message));
-                    if (reply.text.empty()) {
+                    if (reply.text.empty() && !reply.interrupted) {
                         output << "[" << reply.conversation.toString() << "] (保持沉默/已读不回)\n";
                     }
                 } catch (const std::exception& error) {

@@ -14,6 +14,8 @@
 #include "core/conversation/Conversation.h"
 #include "core/message/Message.h"
 
+#include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -80,6 +82,14 @@ public:
         fusion_.context = std::move(context);
     }
 
+    // 代际计数器（用于检测并在新消息到达时协作打断正在进行的 LLM 回复）
+    std::uint64_t generation() const {
+        return generation_.load(std::memory_order_relaxed);
+    }
+    std::uint64_t bumpGeneration() {
+        return generation_.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+
     std::mutex mtx;  // 上下文级锁：同 unit 串行、跨 unit 并行
 
 private:
@@ -90,6 +100,7 @@ private:
                                    int summaryCount, int rawKeep);
 
     FusionContext fusion_;
+    std::atomic<std::uint64_t> generation_{0};
 };
 
 } // namespace mio

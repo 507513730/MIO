@@ -699,7 +699,12 @@ void Runtime::registerBuiltinTools() {
         const int totalMs = static_cast<int>(seconds * 1000.0);
         constexpr int sliceMs = 100;
         int elapsedMs = 0;
+        const std::uint64_t waitInitialGen = g_activeUnit ? g_activeUnit->generation() : 0;
         while (elapsedMs < totalMs) {
+            if (g_activeUnit && g_activeUnit->generation() != waitInitialGen) {
+                log::info("Runtime", "wait 过程中收到新消息打断，提前结束等待");
+                break;
+            }
             int curSlice = std::min(sliceMs, totalMs - elapsedMs);
             std::this_thread::sleep_for(std::chrono::milliseconds(curSlice));
             elapsedMs += curSlice;
@@ -796,6 +801,14 @@ BotReply Runtime::ingest(IncomingMessage message) {
         return BotReply{message.conversation, ""};
     }
 
+    struct ProcessingGuard {
+        std::shared_ptr<InputBuffer> buf;
+        ~ProcessingGuard() {
+            if (buf) buf->decrementProcessing();
+        }
+    } procGuard{buffer};
+    buffer->incrementProcessing();
+
     // 2) 设置当前线程的记忆归属与对话上下文（冷读取摘要 sink 在 route 内部同步触发）
     const auto& targetMsg = batch.rawMessages.back();
     g_activeMemoryPerson = resolveMemoryPerson(targetMsg);
@@ -828,6 +841,9 @@ BotReply Runtime::ingest(IncomingMessage message) {
         return BotReply{batch.conversation, ""};
     }
     g_activeUnit = unit;
+
+    // 递增代际编号，宣告新消息到达（如果当前 unit 上有正在运行的旧 LLM 任务，将在此处触发其协作中断）
+    const std::uint64_t myGen = unit->bumpGeneration();
 
     ChatResponse resp;
     bool reColdStarted = false;
@@ -874,7 +890,12 @@ BotReply Runtime::ingest(IncomingMessage message) {
         req.tools = registry_.defs();
 
         // 7) 工具循环；sink：逐条落档案 + 入 unit 上下文
-        resp = runToolLoop(*currentLlm, registry_, req, ToolLoopOptions{},
+        ToolLoopOptions loopOpt;
+        loopOpt.shouldInterrupt = [unit, myGen]() {
+            return unit->generation() != myGen;
+        };
+
+        resp = runToolLoop(*currentLlm, registry_, req, loopOpt,
                            [this, unit, conv = batch.conversation](
                                 const Msg& m) {
                                 achieve_.append(conv, m);
@@ -891,6 +912,12 @@ BotReply Runtime::ingest(IncomingMessage message) {
         systemPrompt_ = rebuildSystemPrompt(diary_.consume());
     }
 
+    if (resp.finishReason == "interrupted") {
+        log::info("Runtime", "会话 " + batch.conversation.toString() +
+                              " 的回复被新消息打断，丢弃过时输出");
+        return BotReply{batch.conversation, "", /*interrupted=*/true};
+    }
+
     if (g_activeKeepSilent) {
         log::info("Runtime", "模型自主调用 keepsilent 保持沉默，本轮不发送回复消息");
         resp.text = "";
@@ -898,7 +925,7 @@ BotReply Runtime::ingest(IncomingMessage message) {
         emit(batch.conversation, targetMsg.senderId, resp.text);
     }
 
-    return BotReply{batch.conversation, resp.text};
+    return BotReply{batch.conversation, resp.text, /*interrupted=*/false};
 }
 
 RuntimeState Runtime::state() const {
